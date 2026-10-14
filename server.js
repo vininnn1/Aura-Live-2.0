@@ -13,6 +13,16 @@ const LIKE_AURA = 1;                                         // por curtida
 const GIFT_AURA_PER_COIN = 10;                               // por coin de presente
 const AGAIN_COOLDOWN_MS = 10000;                             // repetir o nick so refaz o destaque a cada 10s
 const MAX_EVENTS = 3000;
+// Efeitos por presente (total de coins = coins x repeticoes). Do maior para o menor.
+const EFFECT_TIERS = [
+  { min: 30, tipo: "colosso",  ms: 30000 },
+  { min: 20, tipo: "gigante",  ms: 20000 },
+  { min: 5,  tipo: "giro",     ms: 3000 },
+  { min: 1,  tipo: "destaque", ms: 2500 },
+];
+const PENDING_TTL_MS = 10 * 60 * 1000;   // efeito guardado ate o usuario comentar o nick
+const MAX_PENDING = 3;
+const pending = new Map();               // usuario do TikTok(minusculo) -> [{tipo, ms, total, ts}]
 const EVENT_TTL_MS = 60 * 1000;
 
 const JUNK = new Set(["roblox", "rblx", "skin", "nick", "nickname", "user", "username", "usuario",
@@ -43,13 +53,21 @@ const pick = (req, ...names) => {
   }
   return "";
 };
-const cleanFrom = (s) => String(s).replace(/^@+/, "").replace(/[^A-Za-z0-9_.\-]/g, "").slice(0, 30);
+const cleanFrom = (s) => (/[%{}]/.test(String(s)) ? "" : String(s).replace(/^@+/, "").replace(/[^A-Za-z0-9_.\-]/g, "").slice(0, 30));
 
-// "!roblox Builderman", "roblox @Builderman", "!skin Builderman". O nick vem SEMPRE do texto do comentario.
+// Aceita "!roblox Builderman", "!skin Builderman" ou so o nick em UMA palavra ("Builderman").
+// O nick vem SEMPRE do texto do comentario, nunca do nome do TikTok. BARE_NICK=0 desliga o modo "so o nick".
+const BARE_NICK = process.env.BARE_NICK !== "0";
+const NICK_RE = /^[A-Za-z][A-Za-z0-9_]{2,19}$/;
 function parseNick(text) {
-  const m = String(text).match(/(?:^|\s)[!\/]?(?:roblox|rblx|skin)\s+@?([A-Za-z][A-Za-z0-9_]{2,19})(?![A-Za-z0-9_])/i);
-  if (!m) return null;
-  return JUNK.has(m[1].toLowerCase()) ? null : m[1];
+  const t = String(text).trim();
+  const m = t.match(/(?:^|\s)[!\/]?(?:roblox|rblx|skin)\s+@?([A-Za-z][A-Za-z0-9_]{2,19})(?![A-Za-z0-9_])/i);
+  let nick = m ? m[1] : null;
+  if (!nick && BARE_NICK) {
+    const one = t.replace(/^@+/, "");
+    if (NICK_RE.test(one)) nick = one;
+  }
+  return nick && !JUNK.has(nick.toLowerCase()) ? nick : null;
 }
 function top(n) {
   return [...players.values()].sort((a, b) => b.aura - a.aura).slice(0, n)
@@ -70,7 +88,25 @@ function addAura(p, delta, kind) {
   pushEvent({ type: "aura", nick: p.nick, delta, total: p.aura, kind });
 }
 
+function tierFor(total) {
+  return EFFECT_TIERS.find((t) => total >= t.min) || null;
+}
+function emitEffect(p, tier, total) {
+  pushEvent({ type: "efeito", nick: p.nick, tipo: tier.tipo, ms: tier.ms, total });
+}
+function flushPending(fromKey, p) {
+  const list = pending.get(fromKey);
+  if (!list) return;
+  pending.delete(fromKey);
+  for (const e of list) if (Date.now() - e.ts < PENDING_TTL_MS) emitEffect(p, e, e.total);
+}
+
+let ingestCount = 0;
 function ingest(req, res) {
+  ingestCount++;
+  if (ingestCount <= 100 || ingestCount % 20 === 0) {
+    console.log("[INGEST]", ingestCount, JSON.stringify({ q: req.query, b: req.body }).slice(0, 300));
+  }
   const type = (pick(req, "type", "event") || "comment").toLowerCase();
   const from = cleanFrom(pick(req, "user", "uniqueId", "nickname", "username"));
   const fromKey = from.toLowerCase();
@@ -78,7 +114,20 @@ function ingest(req, res) {
   if (type === "like" || type === "gift") {
     const key = byFrom.get(fromKey);
     const p = key && players.get(key);
-    if (!p) return res.json({ ok: true, ignored: true, why: "usuario sem skin na tela" });
+    if (!p) {
+      if (type === "gift" && fromKey) {
+        const coins0 = Math.max(1, Number(pick(req, "coins", "diamondCount", "diamonds")) || 1);
+        const reps0 = Math.min(50, Math.max(1, parseInt(pick(req, "repeatCount", "count"), 10) || 1));
+        const total0 = Math.round(coins0 * reps0), tier0 = tierFor(total0);
+        if (tier0) {
+          const list = pending.get(fromKey) || [];
+          list.push({ ...tier0, total: total0, ts: Date.now() });
+          pending.set(fromKey, list.slice(-MAX_PENDING));
+          return res.json({ ok: true, pending: true, tipo: tier0.tipo });
+        }
+      }
+      return res.json({ ok: true, ignored: true, why: "usuario sem skin na tela" });
+    }
     if (type === "like") {
       const n = Math.min(500, Math.max(1, parseInt(pick(req, "count", "likeCount", "likes"), 10) || 1));
       addAura(p, n * LIKE_AURA, "like");
@@ -86,6 +135,8 @@ function ingest(req, res) {
       const coins = Math.max(1, Number(pick(req, "coins", "diamondCount", "diamonds")) || 1);
       const reps = Math.min(50, Math.max(1, parseInt(pick(req, "repeatCount", "count"), 10) || 1));
       addAura(p, Math.round(coins * reps * GIFT_AURA_PER_COIN), "gift");
+      const total = Math.round(coins * reps), tier = tierFor(total);
+      if (tier) emitEffect(p, tier, total);
     }
     return res.json({ ok: true, nick: p.nick, aura: p.aura });
   }
@@ -101,6 +152,7 @@ function ingest(req, res) {
       p.lastAgain = Date.now();
       pushEvent({ type: "again", nick: p.nick, from });
     }
+    if (fromKey) flushPending(fromKey, p);
     return res.json({ ok: true, nick: p.nick, aura: p.aura, again: true });
   }
   evictIfFull();
@@ -108,6 +160,7 @@ function ingest(req, res) {
   players.set(key, p);
   pushEvent({ type: "join", nick, from });
   addAura(p, JOIN_AURA, "join");
+  if (fromKey) flushPending(fromKey, p);
   res.json({ ok: true, nick, aura: p.aura, created: true });
 }
 function state(req, res) {
@@ -121,7 +174,7 @@ app.post("/events", auth, ingest);   // compativel com a acao antiga do TikFinit
 app.get("/events", auth, (req, res) => (pick(req, "comment", "message") ? ingest(req, res) : state(req, res)));
 app.get("/state", auth, state);
 app.all("/reset", auth, (_req, res) => {
-  players.clear(); byFrom.clear(); events.length = 0;
+  players.clear(); byFrom.clear(); pending.clear(); events.length = 0;
   pushEvent({ type: "reset" });
   res.json({ ok: true, seq });
 });
@@ -137,7 +190,7 @@ app.get("/teste", (req, res) => {
   '<label>Comentario</label><input id="c" value="!roblox Builderman">' +
   '<button onclick="go(\'comment\')">Comentario (entra a skin)</button>' +
   '<button onclick="go(\'like\',\'&count=20\')">20 curtidas (aura)</button>' +
-  '<button onclick="go(\'gift\',\'&coins=5\')">Presente 5 coins (aura)</button>' +
+  '<button onclick="go(\'gift\',\'&coins=1\')">Presente 1 coin (destaque)</button>' +'<button onclick="go(\'gift\',\'&coins=5\')">Presente 5 coins (giro)</button>' +'<button onclick="go(\'gift\',\'&coins=20\')">Presente 20 coins (gigante)</button>' +'<button onclick="go(\'gift\',\'&coins=30\')">Presente 30 coins (colosso)</button>' +
   '<button onclick="r(\'/reset?x=1\')">Zerar</button><button onclick="r(\'/state?since=0\')">Ver estado</button><pre id="o">-</pre>' +
   '<script>const K=' + JSON.stringify(key) + ';async function r(p){try{const x=await fetch(p+(p.includes("?")?K:"?"+K.slice(1)));' +
   'document.getElementById("o").textContent=JSON.stringify(await x.json(),null,1)}catch(e){document.getElementById("o").textContent=e}}' +
