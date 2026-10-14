@@ -91,6 +91,11 @@ function addAura(p, delta, kind) {
 function tierFor(total) {
   return EFFECT_TIERS.find((t) => total >= t.min) || null;
 }
+// Se a URL traz &efeito=destaque|giro|gigante|colosso, esse efeito vale (independe do preco em coins).
+function tierPick(req, total) {
+  const forced = String(pick(req, "efeito", "effect")).toLowerCase();
+  return EFFECT_TIERS.find((t) => t.tipo === forced) || tierFor(total);
+}
 function emitEffect(p, tier, total) {
   pushEvent({ type: "efeito", nick: p.nick, tipo: tier.tipo, ms: tier.ms, total });
 }
@@ -118,7 +123,7 @@ function ingest(req, res) {
       if (type === "gift" && fromKey) {
         const coins0 = Math.max(1, Number(pick(req, "coins", "diamondCount", "diamonds")) || 1);
         const reps0 = Math.min(50, Math.max(1, parseInt(pick(req, "repeatCount", "count"), 10) || 1));
-        const total0 = Math.round(coins0 * reps0), tier0 = tierFor(total0);
+        const total0 = Math.round(coins0 * reps0), tier0 = tierPick(req, total0);
         if (tier0) {
           const list = pending.get(fromKey) || [];
           list.push({ ...tier0, total: total0, ts: Date.now() });
@@ -135,7 +140,7 @@ function ingest(req, res) {
       const coins = Math.max(1, Number(pick(req, "coins", "diamondCount", "diamonds")) || 1);
       const reps = Math.min(50, Math.max(1, parseInt(pick(req, "repeatCount", "count"), 10) || 1));
       addAura(p, Math.round(coins * reps * GIFT_AURA_PER_COIN), "gift");
-      const total = Math.round(coins * reps), tier = tierFor(total);
+      const total = Math.round(coins * reps), tier = tierPick(req, total);
       if (tier) emitEffect(p, tier, total);
     }
     return res.json({ ok: true, nick: p.nick, aura: p.aura });
