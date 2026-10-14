@@ -196,9 +196,12 @@ app.get("/teste", (req, res) => {
   '<button onclick="go(\'comment\')">Comentario (entra a skin)</button>' +
   '<button onclick="go(\'like\',\'&count=20\')">20 curtidas (aura)</button>' +
   '<button onclick="go(\'gift\',\'&coins=1\')">Presente 1 coin (destaque)</button>' +'<button onclick="go(\'gift\',\'&coins=5\')">Presente 5 coins (giro)</button>' +'<button onclick="go(\'gift\',\'&coins=20\')">Presente 20 coins (gigante)</button>' +'<button onclick="go(\'gift\',\'&coins=30\')">Presente 30 coins (colosso)</button>' +
+  '<button onclick="lote()">Entrar 20 skins de teste (multidao)</button>' +
   '<button onclick="r(\'/reset?x=1\')">Zerar</button><button onclick="r(\'/state?since=0\')">Ver estado</button><pre id="o">-</pre>' +
   '<script>const K=' + JSON.stringify(key) + ';async function r(p){try{const x=await fetch(p+(p.includes("?")?K:"?"+K.slice(1)));' +
   'document.getElementById("o").textContent=JSON.stringify(await x.json(),null,1)}catch(e){document.getElementById("o").textContent=e}}' +
+  'const NICKS=["Builderman","Roblox","Shedletsky","Telamon","Stickmasterluke","Merely","KreekCraft","Flamingo","Linkmon99","Denis","Quenty","ObliviousHD","Loleris","Zeuxcg","Seranok","Erik","Alex","Cat","Dog","Bacon"];' +
+  'async function lote(){let ok=0;for(let i=0;i<NICKS.length;i++){try{await fetch("/ingest?type=comment&user=teste"+i+"&comment="+encodeURIComponent(NICKS[i])+K);ok++}catch(e){}await new Promise(function(r){setTimeout(r,400)})}document.getElementById("o").textContent="enviados: "+ok}' +
   'function go(t,e){r("/ingest?type="+t+"&user="+encodeURIComponent(u.value)+"&comment="+encodeURIComponent(c.value)+(e||""))}</script>');
 });
 app.listen(PORT, () => console.log("Aura live na porta " + PORT));
